@@ -67,13 +67,15 @@ nav {
 nav .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding-block: 10px; }
 .logo { font-family: var(--font-display); font-size: 12px; color: var(--gold); text-decoration: none; letter-spacing: 1px; }
 nav ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
-nav a.tab {
+nav .tab {
   display: inline-block; font-family: var(--font-ui); font-size: 17px; line-height: 1;
   color: var(--ink); text-decoration: none; padding: 8px 12px;
   transition: background .12s steps(2), color .12s steps(2);
 }
-nav a.tab:hover, nav a.tab:focus-visible { background: var(--panel-hi); outline: none; }
+nav .tab:hover, nav .tab:focus-visible { background: var(--panel-hi); outline: none; }
 nav a.tab.on { background: var(--gold); color: var(--line); }
+nav button.tab { border: 0; background: none; cursor: pointer; }
+nav .tab.muted { color: var(--ink-dim); text-decoration: line-through; }
 
 /* ---------- pixel panels ---------- */
 .widget {
@@ -252,7 +254,6 @@ h1 .last { color: var(--ink); display: block; }
 .orb-btn.lit { opacity: 1; transform: scale(.94); }
 .orb-btn:focus-visible { outline: none; opacity: .7; }
 .echo-status { font-family: var(--font-ui); font-size: 19px; line-height: 1.35; min-height: 2.7em; margin: 0; text-align: center; }
-.sound-btn { font-size: 16px; padding: 10px 14px; }
 
 @media (max-width: 1000px) { .arcade-grid { grid-template-columns: 1fr; } }
 
@@ -313,7 +314,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
   .stat-list li { grid-template-columns: 1fr; gap: 2px; }
   .widget { padding: 30px 18px 22px; }
   nav .wrap { justify-content: center; }
-  nav a.tab { font-size: 16px; padding: 7px 10px; }
+  nav .tab { font-size: 16px; padding: 7px 10px; }
   section { padding-block: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -335,6 +336,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
       <li><a class="tab" href="#home" data-view="home">Home</a></li>
       <li><a class="tab" href="#arcade" data-view="arcade">Arcade</a></li>
       <li><a class="tab" href="#ask" data-view="ask">Ask me</a></li>
+      <li><button class="tab" type="button" id="sfx-toggle" aria-pressed="true" aria-label="Sound effects">♪ Sound</button></li>
     </ul>
   </div>
 </nav>
@@ -546,6 +548,70 @@ footer .save b { color: var(--gold); font-weight: 600; }
     set(k, v) { try { localStorage.setItem("np-" + k, v); } catch {} }
   };
 
+  /* ---------- sound effects: synthesized chiptune, nothing to download ---------- */
+  // Browsers only allow sound after the visitor's first click or key press, so nothing plays before that.
+  const sfx = (() => {
+    let ac = null, out = null, on = store.get("sound") !== "off";
+    function ready() {
+      if (!on) return null;
+      const ua = navigator.userActivation;
+      if (ua && !ua.hasBeenActive) return null;
+      if (!ac) {
+        const A = window.AudioContext || window.webkitAudioContext;
+        if (!A) return null;
+        try { ac = new A(); out = ac.createGain(); out.gain.value = 0.55; out.connect(ac.destination); } catch { ac = null; return null; }
+      }
+      if (ac.state === "suspended") ac.resume().catch(() => {});
+      return ac;
+    }
+    function tone(c, f, d, o = {}) {
+      const t = c.currentTime + (o.at || 0);
+      const osc = c.createOscillator(), g = c.createGain();
+      osc.type = o.type || "square";
+      osc.frequency.setValueAtTime(f, t);
+      if (o.to) osc.frequency.exponentialRampToValueAtTime(o.to, t + d);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(o.vol ?? 0.07, t + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      osc.connect(g).connect(out); osc.start(t); osc.stop(t + d + 0.02);
+    }
+    function noise(c, d, o = {}) {
+      const t = c.currentTime + (o.at || 0);
+      const len = Math.ceil(c.sampleRate * d), buf = c.createBuffer(1, len, c.sampleRate), data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      const src = c.createBufferSource(), g = c.createGain(), f = c.createBiquadFilter();
+      f.type = "bandpass"; f.frequency.value = o.freq || 1200;
+      src.buffer = buf;
+      g.gain.setValueAtTime(o.vol ?? 0.08, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+      src.connect(f).connect(g).connect(out); src.start(t);
+    }
+    const seq = (c, notes, step, o = {}) => notes.forEach((f, i) => tone(c, f, step * 1.6, { ...o, at: i * step }));
+    const SOUNDS = {
+      hover: c => tone(c, 1320, 0.025, { type: "triangle", vol: 0.022 }),
+      click: c => tone(c, 620, 0.06, { to: 930, vol: 0.045 }),
+      warp: c => { seq(c, [330, 494, 659, 988], 0.035, { vol: 0.03 }); noise(c, 0.18, { freq: 2400, vol: 0.03 }); },
+      cast: c => { seq(c, [523, 659, 784, 1047, 1319, 1568], 0.045, { type: "triangle", vol: 0.06 }); tone(c, 2093, 0.25, { type: "sine", vol: 0.03, at: 0.27 }); },
+      trait: c => seq(c, [880, 1175], 0.06, { type: "triangle", vol: 0.06 }),
+      start: c => seq(c, [392, 523, 784], 0.06, { vol: 0.045 }),
+      coin: c => seq(c, [784, 1047, 1319], 0.035, { type: "triangle", vol: 0.06 }),
+      big: c => seq(c, [659, 880, 1175, 1568, 1976], 0.04, { vol: 0.035 }),
+      hurt: c => { noise(c, 0.2, { freq: 600, vol: 0.1 }); tone(c, 240, 0.2, { to: 90, vol: 0.055 }); },
+      over: c => seq(c, [523, 440, 349, 262], 0.13, { vol: 0.045 }),
+      flip: c => tone(c, 520, 0.035, { type: "triangle", vol: 0.05, to: 700 }),
+      match: c => seq(c, [988, 1319], 0.07, { type: "triangle", vol: 0.06 }),
+      miss: c => tone(c, 200, 0.16, { to: 130, vol: 0.045 }),
+      win: c => { seq(c, [523, 659, 784, 1047], 0.09, { vol: 0.045 }); tone(c, 1319, 0.4, { type: "triangle", vol: 0.06, at: 0.4 }); },
+      sent: c => seq(c, [659, 988, 1319, 1760], 0.06, { type: "triangle", vol: 0.06 }),
+      copy: c => tone(c, 1047, 0.05, { type: "triangle", vol: 0.05 })
+    };
+    return {
+      play(name) { const c = ready(); if (c) try { SOUNDS[name](c); } catch {} },
+      note(freq, secs) { const c = ready(); if (c) try { tone(c, freq, secs, { vol: 0.055 }); } catch {} },
+      get on() { return on; },
+      set(v) { on = v; store.set("sound", v ? "on" : "off"); if (v) this.play("click"); }
+    };
+  })();
+
   function drawSprite(cv, rows, pal) {
     const c = cv.getContext("2d");
     c.clearRect(0, 0, cv.width, cv.height);
@@ -755,7 +821,27 @@ footer .save b { color: var(--gold); font-weight: 600; }
     const r = el.getBoundingClientRect();
     burst(e && e.clientX ? e.clientX : r.left + r.width / 2, e && e.clientY ? e.clientY : r.top + r.height / 2);
   };
-  document.querySelectorAll(".widget.hoverable, .btn, .trait").forEach(el => el.addEventListener("click", e => burstAt(el, e)));
+  document.querySelectorAll(".widget.hoverable, .btn, .trait").forEach(el => el.addEventListener("click", e => {
+    burstAt(el, e);
+    if (!el.classList.contains("trait")) sfx.play("click");
+  }));
+  let lastHover = 0;
+  document.addEventListener("pointerover", e => {
+    if (e.pointerType !== "mouse") return;
+    const el = e.target.closest?.(".tab, .btn, .widget.hoverable, .trait, .rune, .orb-btn, #avatar");
+    if (!el || el.contains(e.relatedTarget)) return;
+    const now = performance.now();
+    if (now - lastHover < 70) return;
+    lastHover = now; sfx.play("hover");
+  });
+  const sfxBtn = document.getElementById("sfx-toggle");
+  const paintSfx = () => {
+    sfxBtn.textContent = sfx.on ? "♪ Sound" : "♪ Muted";
+    sfxBtn.setAttribute("aria-pressed", String(sfx.on));
+    sfxBtn.classList.toggle("muted", !sfx.on);
+  };
+  sfxBtn.addEventListener("click", () => { sfx.set(!sfx.on); paintSfx(); });
+  paintSfx();
   document.querySelectorAll("article.widget.hoverable").forEach(el => el.addEventListener("keydown", e => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault(); el.classList.add("pressed"); burstAt(el);
@@ -765,6 +851,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
   av.addEventListener("click", () => {
     const r = av.getBoundingClientRect();
     burst(r.left + r.width * (14.5 / 16), r.top + r.height * (4.5 / 20), 20, 46);
+    sfx.play("cast");
     if (!reduce) av.animate([{ transform: "translateY(0)" }, { transform: "translateY(-10px)" }, { transform: "translateY(0)" }], { duration: 300, easing: "steps(4)" });
   });
 
@@ -772,12 +859,14 @@ footer .save b { color: var(--gold); font-weight: 600; }
   const note = document.getElementById("trait-note");
   document.querySelectorAll(".trait").forEach(b => b.addEventListener("click", () => {
     document.querySelectorAll(".trait").forEach(x => x.classList.toggle("got", x === b));
+    sfx.play("trait");
     note.textContent = b.dataset.note;
   }));
 
   /* ================= VIEWS + PIXEL WIPE ================= */
   const wipe = document.getElementById("wipe"), wg = wipe.getContext("2d");
   function pixelWipe(midway) {
+    sfx.play("warp");
     if (reduce) { midway(); return; }
     const B = 28;
     wipe.width = innerWidth; wipe.height = innerHeight;
@@ -883,7 +972,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
       keys = { l: keys.l, r: keys.r }; restartAt = 0; msg.hidden = true;
       renderHud();
     }
-    function takeOver() { if (mode !== "you" || restartAt) reset("you"); }
+    function takeOver() { if (mode !== "you" || restartAt) { reset("you"); sfx.play("start"); } }
     function renderHud() {
       hudEl.innerHTML = `<span><b>Score</b> ${st.score}</span><span class="hearts" aria-label="${st.hearts} hearts left">${"♥".repeat(Math.max(0, st.hearts))}${"♡".repeat(3 - Math.max(0, st.hearts))}</span><span><b>Best</b> ${best.read("catch") ?? "–"}</span>`;
     }
@@ -942,8 +1031,8 @@ footer .save b { color: var(--gold); font-weight: 600; }
         it.y += it.v * dt;
         const w = it.type === "big" ? 7 : it.type === "bolt" ? 3 : 5;
         if (it.y + w > TOP + 3 && it.y < GH - 4 && it.x + w > l + 1 && it.x < rr - 1) {
-          if (it.type === "bolt") { if (st.flash <= 0) { st.hearts--; st.flash = 900; } }
-          else st.score += it.type === "big" ? 5 : 1;
+          if (it.type === "bolt") { if (st.flash <= 0) { st.hearts--; st.flash = 900; if (mode === "you") sfx.play("hurt"); } }
+          else { st.score += it.type === "big" ? 5 : 1; if (mode === "you") sfx.play(it.type === "big" ? "big" : "coin"); }
           renderHud(); return false;
         }
         return it.y < GH;
@@ -957,6 +1046,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
           renderHud();
           msg.textContent = `Game over · ${st.score} points${isBest ? " · New best!" : ""}`;
           msg.hidden = false;
+          sfx.play("over");
           restartAt = now + 2800;
         } else restartAt = now + 600;
       }
@@ -1033,7 +1123,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
         b.append(el("canvas", { width: 7, height: 7 }));
         face(b, null);
         b.addEventListener("click", () => {
-          if (mode === "demo") { newBoard("you"); flipCard(i); } else flipCard(i);
+          if (mode === "demo") { newBoard("you"); sfx.play("start"); flipCard(i); } else flipCard(i);
         });
         grid.append(b); return b;
       });
@@ -1047,6 +1137,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
       if (lock || !b.classList.contains("back")) return;
       if (mode === "you" && !t0) { t0 = performance.now(); timer = setInterval(renderHud, 1000); }
       lock = true;
+      if (mode === "you") sfx.play("flip");
       b.classList.remove("back"); b.setAttribute("aria-label", `Rune ${i + 1}, shape ${idx + 1}`);
       await flip(b, idx);
       if (myGen !== gen) return;
@@ -1056,11 +1147,11 @@ footer .save b { color: var(--gold); font-weight: 600; }
       const [a, c] = open; open = [];
       if (deck[a] === deck[c]) {
         matched++; cards[a].classList.add("done"); cards[c].classList.add("done");
-        if (mode === "you") { burstAt(cards[c]); status.textContent = "Match!"; }
+        if (mode === "you") { burstAt(cards[c]); status.textContent = "Match!"; sfx.play("match"); }
         lock = false;
         if (matched === 8) finish(myGen);
       } else {
-        if (mode === "you") status.textContent = "Not a pair.";
+        if (mode === "you") { status.textContent = "Not a pair."; sfx.play("miss"); }
         setTimeout(async () => {
           if (myGen !== gen) return;
           [a, c].forEach(k => { cards[k].classList.add("back"); cards[k].setAttribute("aria-label", `Rune ${k + 1}, face down`); });
@@ -1076,6 +1167,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
         const prev = best.read("runes"), isBest = prev === null || moves < prev;
         if (isBest) best.write("runes", moves);
         status.textContent = `All pairs found in ${moves} moves.${isBest ? " New best!" : ""}`;
+        sfx.play("win");
         renderHud();
         setTimeout(() => { if (myGen === gen) newBoard("demo"); }, 4000);
       } else setTimeout(() => { if (myGen === gen) newBoard("demo"); }, 1500);
@@ -1104,29 +1196,16 @@ footer .save b { color: var(--gold); font-weight: 600; }
     const wrapOrbs = el("div", { class: "orbs" });
     const orbs = colors.map((c, i) => {
       const b = el("button", { class: "orb-btn", type: "button", "aria-label": `Orb ${i + 1}`, style: `--c:${c}` }, String(i + 1));
-      b.addEventListener("click", () => { ensureAudio(); press(i); });
+      b.addEventListener("click", () => press(i));
       wrapOrbs.append(b); return b;
     });
     const status = el("p", { class: "echo-status", "aria-live": "polite" });
-    const soundB = el("button", { class: "btn alt sound-btn", type: "button", "aria-pressed": "true" }, "Sound: on");
-    stageEl.append(wrapOrbs, status, soundB);
+    stageEl.append(wrapOrbs, status);
 
-    let mode, seq = [], pos = 0, accepting = false, over = false, round = 0, ac = null, sound = true, timers = [], idle = 0;
+    let mode, seq = [], pos = 0, accepting = false, over = false, round = 0, timers = [], idle = 0;
     const later = (fn, ms) => { timers.push(setTimeout(fn, ms)); };
     const clearAll = () => { timers.forEach(clearTimeout); timers = []; clearTimeout(idle); };
-    function ensureAudio() {
-      try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); if (ac.state === "suspended") ac.resume(); } catch {}
-    }
-    function beep(i, ms) {
-      if (mode !== "you" || !sound || !ac) return;
-      try {
-        const o = ac.createOscillator(), gN = ac.createGain();
-        o.type = "square"; o.frequency.value = tones[i];
-        gN.gain.setValueAtTime(0.06, ac.currentTime);
-        gN.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + ms / 1000);
-        o.connect(gN).connect(ac.destination); o.start(); o.stop(ac.currentTime + ms / 1000);
-      } catch {}
-    }
+    function beep(i, ms) { if (mode === "you") sfx.note(tones[i], ms / 1000); }
     function light(i, ms) { orbs[i].classList.add("lit"); beep(i, ms); later(() => orbs[i].classList.remove("lit"), ms); }
     function renderHud() { hudEl.innerHTML = `<span><b>Round</b> ${round}</span><span><b>Best</b> ${best.read("echo") ?? "–"}</span>`; }
     function startDemo() {
@@ -1161,7 +1240,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
       idle = setTimeout(() => { if (mode === "you" && accepting) { status.textContent = "Here it is again."; later(playSeq, 400); } }, 8000);
     }
     function press(i) {
-      if (mode === "demo" || over) { startYou(); return; }
+      if (mode === "demo" || over) { startYou(); sfx.play("start"); return; }
       if (!accepting) return;
       armIdle();
       light(i, 200);
@@ -1170,6 +1249,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
         const reached = round - 1;
         const prev = best.read("echo"), isBest = reached > 0 && (prev === null || reached > prev);
         if (isBest) best.write("echo", reached);
+        sfx.play("over");
         status.textContent = `Wrong orb. You cleared ${reached} round${reached === 1 ? "" : "s"}.${isBest ? " New best!" : ""}`;
         renderHud();
         later(startDemo, 3500);
@@ -1177,20 +1257,17 @@ footer .save b { color: var(--gold); font-weight: 600; }
       }
       pos++;
       if (pos === seq.length) {
-        accepting = false; clearTimeout(idle); status.textContent = "Nice!";
+        accepting = false; clearTimeout(idle); status.textContent = "Nice!"; later(() => sfx.play("match"), 180);
         const r = wrapOrbs.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 2, 14, 40);
         later(next, 700);
       }
     }
-    soundB.addEventListener("click", () => {
-      sound = !sound; soundB.textContent = "Sound: " + (sound ? "on" : "off"); soundB.setAttribute("aria-pressed", String(sound));
-    });
     startDemo();
     return {
-      stop() { clearAll(); try { ac && ac.close(); } catch {} },
+      stop() { clearAll(); },
       key(e, down) {
         if (!down || e.repeat || !/^[1-4]$/.test(e.key) || !inView(wrapOrbs) || e.target.closest?.("input, textarea")) return;
-        e.preventDefault(); ensureAudio(); press(+e.key - 1);
+        e.preventDefault(); press(+e.key - 1);
       }
     };
   }
@@ -1218,7 +1295,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
   [qName, qMail, qText].forEach(f => f.addEventListener("input", updateMail)); updateMail();
 
   async function copyText(text, ok, fallbackEl) {
-    try { await navigator.clipboard.writeText(text); status.textContent = ok; }
+    try { await navigator.clipboard.writeText(text); status.textContent = ok; sfx.play("copy"); }
     catch {
       if (fallbackEl) { fallbackEl.focus(); fallbackEl.select?.(); }
       status.textContent = "Couldn't copy automatically. The text is selected, so press Ctrl+C (or long-press and copy).";
@@ -1266,12 +1343,14 @@ footer .save b { color: var(--gold); font-weight: 600; }
     clearTimeout(timeout);
     if (sent) {
       status.textContent = "Sent! Your question is on its way to my inbox. Thanks for asking.";
+      sfx.play("sent");
       qText.value = ""; updateMail();
       const r = sendBtn.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 2, 18, 40);
       setTimeout(() => { sending = false; sendBtn.disabled = false; sendBtn.textContent = "✦ Send question"; }, 15000);
       sendBtn.textContent = "Sent ✓";
     } else {
       status.textContent = reason || "Your question couldn't be sent from here.";
+      sfx.play("miss");
       fallback.hidden = false;
       sending = false; sendBtn.disabled = false; sendBtn.textContent = "✦ Try again";
     }
@@ -1287,7 +1366,7 @@ footer .save b { color: var(--gold); font-weight: 600; }
   document.getElementById("copy-mail").addEventListener("click", () => {
     const addr = document.getElementById("mail-addr");
     navigator.clipboard.writeText(EMAIL).then(
-      () => { status.textContent = "Email address copied."; },
+      () => { status.textContent = "Email address copied."; sfx.play("copy"); },
       () => { const r = document.createRange(); r.selectNodeContents(addr); const s = getSelection(); s.removeAllRanges(); s.addRange(r); status.textContent = "Address selected. Press Ctrl+C to copy."; }
     );
   });
