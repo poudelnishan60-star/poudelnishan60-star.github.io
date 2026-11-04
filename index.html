@@ -271,6 +271,7 @@ h1 .last { color: var(--ink); display: block; }
 .status { min-height: 1.65em; margin: 16px 0 0; color: var(--orb); }
 .fallback { display: grid; gap: 12px; margin-top: 4px; }
 .fallback .small { margin: 0; }
+.small a { color: var(--gold); }
 .mail {
   font-family: var(--font-ui); font-size: clamp(18px, 2.4vw, 22px); color: var(--gold);
   word-break: break-all; user-select: all; margin: 0 0 16px;
@@ -1223,6 +1224,14 @@ footer .save b { color: var(--gold); font-weight: 600; }
       status.textContent = "Couldn't copy automatically. The text is selected, so press Ctrl+C (or long-press and copy).";
     }
   }
+  // Without a key (the claude.ai copy, which can't reach Web3Forms anyway), skip Send and point to the live site.
+  if (!WEB3FORMS_KEY) {
+    sendBtn.hidden = true;
+    fallback.hidden = false;
+    fallback.querySelector(".small").innerHTML = 'To send a question straight to my inbox, use my website: <a href="https://poudelnishan60-star.github.io/#ask">poudelnishan60-star.github.io</a>. Or copy your question, or open your mail app:';
+    document.querySelector("#view-ask .lede").textContent = "Got a question about my studies, my internship, or how I use AI? Write it here, then send it from my website or by email.";
+  }
+
   let sending = false;
   form.addEventListener("submit", async e => {
     e.preventDefault();
